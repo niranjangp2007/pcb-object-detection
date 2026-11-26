@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import os
 import sys
+import tempfile
 import time
 import types
 from dataclasses import dataclass, field
@@ -13,7 +14,10 @@ from typing import Any
 
 # Keep Ultralytics config local and offline-safe before importing ultralytics.
 BASE_DIR = Path(__file__).resolve().parent
-os.environ.setdefault("YOLO_CONFIG_DIR", str(BASE_DIR / ".yolo_config"))
+_default_yolo_cfg = BASE_DIR / ".yolo_config"
+if not os.access(BASE_DIR, os.W_OK):
+    _default_yolo_cfg = Path(tempfile.gettempdir()) / ".yolo_config"
+os.environ.setdefault("YOLO_CONFIG_DIR", str(_default_yolo_cfg))
 os.environ.setdefault("YOLO_VERBOSE", "False")
 
 import cv2
@@ -259,10 +263,24 @@ class GeneralDetectionResult:
     inference_ms: float
 
 
+def _disable_ultralytics_sync() -> None:
+    """Disable Ultralytics online telemetry sync for clean offline/cloud operation."""
+    try:
+        from ultralytics import settings
+
+        if settings.get("sync", True):
+            settings.update({"sync": False})
+    except Exception:
+        pass
+
+
 def load_general_model() -> Any:
     """Load the offline YOLO26n general object detection model for CPU inference."""
     from ultralytics import YOLO
 
+    _disable_ultralytics_sync()
+    if not GENERAL_MODEL_PATH.exists():
+        raise FileNotFoundError(f"Missing model weights: {GENERAL_MODEL_PATH}")
     return YOLO(str(GENERAL_MODEL_PATH))
 
 
@@ -270,7 +288,11 @@ def load_models() -> dict[str, Any]:
     """Load all three specialized PCB YOLO models strictly for CPU inference."""
     from ultralytics import YOLO
 
+    _disable_ultralytics_sync()
     _ensure_legacy_albumentations_stubs()
+    for path in (COMPONENT_MODEL_PATH, BARE_DEFECT_MODEL_PATH, SOLDER_DEFECT_MODEL_PATH):
+        if not path.exists():
+            raise FileNotFoundError(f"Missing model weights: {path}")
     models = {
         "components": YOLO(str(COMPONENT_MODEL_PATH)),
         "bare_defects": YOLO(str(BARE_DEFECT_MODEL_PATH)),

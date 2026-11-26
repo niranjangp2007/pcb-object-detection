@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import time
 from collections import Counter
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -101,14 +102,32 @@ def _release_live_camera() -> None:
             pass
 
 
-def _open_local_camera(cam_index: int) -> cv2.VideoCapture:
-    """Open a local webcam, preferring CAP_DSHOW on Windows for fast startup."""
-    if sys.platform.startswith("win"):
-        cap = cv2.VideoCapture(int(cam_index), cv2.CAP_DSHOW)
-        if cap.isOpened():
+def _has_server_camera_device() -> bool:
+    """Check whether a server-side camera device is likely available (Linux checks /dev/video*)."""
+    if sys.platform.startswith("linux"):
+        return any(Path("/dev").glob("video*"))
+    return True
+
+
+def _open_local_camera(cam_index: int) -> cv2.VideoCapture | None:
+    """Open a local webcam safely, preferring CAP_DSHOW on Windows and handling missing devices."""
+    if not _has_server_camera_device():
+        return None
+    try:
+        if sys.platform.startswith("win"):
+            cap = cv2.VideoCapture(int(cam_index), cv2.CAP_DSHOW)
+            if cap is not None and cap.isOpened():
+                return cap
+            if cap is not None:
+                cap.release()
+        cap = cv2.VideoCapture(int(cam_index))
+        if cap is not None and cap.isOpened():
             return cap
-        cap.release()
-    return cv2.VideoCapture(int(cam_index))
+        if cap is not None:
+            cap.release()
+    except Exception:
+        return None
+    return None
 
 
 def _acquire_input_image(input_mode: str, key_prefix: str, help_text: str) -> np.ndarray | None:
@@ -148,10 +167,19 @@ def _acquire_input_image(input_mode: str, key_prefix: str, help_text: str) -> np
         key=f"{key_prefix}_cam_idx",
     )
     if st.button("Capture & Inspect Local Camera Frame", type="primary", key=f"{key_prefix}_cam_btn"):
+        if not _has_server_camera_device():
+            st.warning(
+                "No server-side camera device (/dev/video*) was detected on this host. "
+                "On cloud deployments, switch Webcam Source to **Browser Snapshot (st.camera_input)**."
+            )
+            return None
         cap = _open_local_camera(int(cam_index))
         try:
-            if not cap.isOpened():
-                st.error(f"Could not open local camera index {int(cam_index)}.")
+            if cap is None or not cap.isOpened():
+                st.error(
+                    f"Could not open local camera index {int(cam_index)}. "
+                    "Use **Browser Snapshot (st.camera_input)** if running remotely."
+                )
                 return None
             ok, frame_bgr = cap.read()
             if not ok or frame_bgr is None:
@@ -159,7 +187,8 @@ def _acquire_input_image(input_mode: str, key_prefix: str, help_text: str) -> np
                 return None
             return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         finally:
-            cap.release()
+            if cap is not None:
+                cap.release()
     return None
 
 
@@ -170,6 +199,15 @@ def _run_general_live_stream(
     cam_index: int,
 ) -> None:
     """Stream continuous frames from cv2.VideoCapture and render live YOLO26n detections on CPU."""
+    if not _has_server_camera_device():
+        _release_live_camera()
+        st.info(
+            "No server-side camera device (`/dev/video*`) is attached to this Linux host "
+            "(typical on Streamlit Community Cloud). Select **Browser Snapshot (st.camera_input)** above "
+            "to use your device's browser camera."
+        )
+        return
+
     live_running = st.toggle(
         "Start / Stop Live Detection",
         value=False,
@@ -195,8 +233,11 @@ def _run_general_live_stream(
     st.session_state["live_cap"] = cap
 
     try:
-        if not cap.isOpened():
-            st.error(f"Could not open local camera index {int(cam_index)}. Ensure a webcam is connected and not in use.")
+        if cap is None or not cap.isOpened():
+            st.error(
+                f"Could not open local camera index {int(cam_index)}. Ensure a webcam is connected and not in use, "
+                "or switch to **Browser Snapshot (st.camera_input)**."
+            )
             return
 
         while st.session_state.get("general_live_active", False):
