@@ -1,0 +1,19 @@
+{
+  "settings_version": "0.0.8",
+  "datasets_dir": "D:\\Antigravity\\pcb defect\\datasets",
+  "weights_dir": "weights",
+  "runs_dir": "runs",
+  "uuid": "3b4addd7911948f286c92132195e1574890e4aea8f484bfb3c06a026fe8c363b",
+  "sync": false,
+  "api_key": "",
+  "openai_api_key": "",
+  "clearml": true,
+  "comet": true,
+  "dvc": true,
+  "mlflow": true,
+  "raytune": true,
+  "tensorboard": false,
+  "wandb": false,
+  "vscode_msg": true,
+  "openvino_msg": true
+}
