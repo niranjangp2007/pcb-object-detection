@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from collections import Counter
 from pathlib import Path
@@ -277,6 +278,59 @@ def _run_general_live_stream(
                 counts_placeholder.info("No objects above confidence threshold in the current frame.")
     finally:
         _release_live_camera()
+
+
+def _run_general_webrtc_stream(
+    general_model,
+    conf_threshold: float,
+    imgsz: int,
+) -> None:
+    """Stream continuous browser webcam frames over WebRTC and annotate with YOLO26n on CPU."""
+    try:
+        import av
+        from streamlit_webrtc import webrtc_streamer
+    except ImportError:
+        st.warning(
+            "`streamlit-webrtc` and `av` are not installed in this environment. "
+            "Install them from `requirements.txt` or switch to **Local OpenCV Live Stream** / **Browser Snapshot**."
+        )
+        return
+
+    shared = st.session_state.setdefault(
+        "webrtc_shared",
+        {
+            "lock": threading.Lock(),
+            "conf_threshold": float(conf_threshold),
+            "imgsz": int(imgsz),
+        },
+    )
+    with shared["lock"]:
+        shared["conf_threshold"] = float(conf_threshold)
+        shared["imgsz"] = int(imgsz)
+
+    def video_frame_callback(frame: av.VideoFrame) -> av.VideoFrame:
+        img_rgb = frame.to_ndarray(format="rgb24")
+        with shared["lock"]:
+            conf = float(shared["conf_threshold"])
+            imgsz_val = int(shared["imgsz"])
+        result = run_general_detection(
+            image_rgb=img_rgb,
+            model=general_model,
+            conf_threshold=conf,
+            imgsz=imgsz_val,
+        )
+        return av.VideoFrame.from_ndarray(result.annotated_rgb, format="rgb24")
+
+    st.caption(
+        f"Streaming browser camera over WebRTC (`yolo26n.pt` on CPU, `imgsz={int(imgsz)}`, `conf={conf_threshold:.2f}`)."
+    )
+    webrtc_streamer(
+        key="general_webrtc_stream",
+        video_frame_callback=video_frame_callback,
+        async_processing=True,
+        media_stream_constraints={"video": True, "audio": False},
+        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+    )
 
 
 def _render_general_results(image_rgb: np.ndarray, result: GeneralDetectionResult) -> None:
@@ -631,13 +685,16 @@ def main() -> None:
                 _render_general_results(image_rgb, general_result)
         else:
             st.subheader("Live Webcam Object Detection")
+            webcam_sources = [
+                "Local OpenCV Live Stream (cv2.VideoCapture)",
+                "Browser Live Stream (WebRTC)",
+                "Browser Snapshot (st.camera_input)",
+            ]
+            default_webcam_idx = 0 if _has_server_camera_device() else 1
             cam_backend = st.radio(
                 "Webcam Source",
-                [
-                    "Local OpenCV Live Stream (cv2.VideoCapture)",
-                    "Browser Snapshot (st.camera_input)",
-                ],
-                index=0,
+                webcam_sources,
+                index=default_webcam_idx,
                 horizontal=True,
                 key="general_webcam_backend",
             )
@@ -655,6 +712,14 @@ def main() -> None:
                     conf_threshold=float(conf_threshold),
                     imgsz=int(general_imgsz),
                     cam_index=int(cam_index),
+                )
+            elif cam_backend == "Browser Live Stream (WebRTC)":
+                _release_live_camera()
+                st.session_state["general_live_active"] = False
+                _run_general_webrtc_stream(
+                    general_model=general_model,
+                    conf_threshold=float(conf_threshold),
+                    imgsz=int(general_imgsz),
                 )
             else:
                 _release_live_camera()
